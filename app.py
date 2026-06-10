@@ -32,8 +32,7 @@ def init_session_state() -> None:
 
 def get_api_key() -> Optional[str]:
     """Read the Google API key from environment variables."""
-    return ("AQ.Ab8RN6IvaAkU7DeGwfWO3NhnHYS1oPGxaI2lWZD9Cra9P1Omig")
-
+    return os.getenv("GOOGLE_API_KEY")
 @st.cache_resource
 def load_embedding_model(api_key: Optional[str]):
     return create_embedding_model(api_key=api_key)
