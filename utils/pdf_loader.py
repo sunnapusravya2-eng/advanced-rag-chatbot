@@ -1,7 +1,12 @@
+import os
 from io import BytesIO
 from importlib import import_module
 from typing import BinaryIO
+from dotenv import load_dotenv
 from pypdf import PdfReader
+
+# Load environment variables
+load_dotenv()
 
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter

@@ -1,56 +1,43 @@
-from typing import List
-from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
-from langchain.messages import HumanMessage, SystemMessage
+import os
+from typing import Optional
+import google.generativeai as genai
 
+def create_chat_model(api_key: Optional[str] = None):
+    key = api_key or os.getenv("GOOGLE_API_KEY")
+    if not key:
+        raise ValueError("GOOGLE_API_KEY not provided.")
+    genai.configure(api_key=key)
+    model_name = os.getenv("CHAT_MODEL", "gemini-2.5-flash")
+    temperature = float(os.getenv("CHAT_TEMPERATURE", "0.2"))
+    return {"client": genai, "model": model_name, "temperature": temperature}
 
-def create_chat_model(api_key: str | None = None, model: str = "gemini-2.5-flash") -> ChatGoogleGenerativeAI:
-    """Create a Gemini 2.5 Flash chat model instance."""
-    kwargs = {
-        "model": model,
-        "temperature": 0.2,
-        "max_tokens": 1024,
-    }
-    if api_key:
-        kwargs["api_key"] = api_key
-    return ChatGoogleGenerativeAI(**kwargs)
-
-
-def build_prompt(query: str, retrieved_chunks: list[dict], history: list[dict]) -> list[list[SystemMessage | HumanMessage]]:
-    """Build a chat prompt that includes retrieved PDF context and prior messages."""
-    system_instruction = (
-        "You are a helpful assistant. Answer using only the provided PDF context. "
-        "If the answer is not contained in the context, reply honestly that the information is unavailable. "
-        "Keep responses concise and factual."
+def generate_answer(
+    question: str,
+    retrieved_chunks: list,
+    chat_model: dict,
+    history: list,
+) -> str:
+    context = "\n\n".join(
+        f"[Chunk {c['index']+1}]: {c['content']}" for c in retrieved_chunks
     )
-
-    context_blocks = []
-    for item in retrieved_chunks:
-        context_blocks.append(f"Chunk {item['index'] + 1}: {item['content']}")
-
-    context_text = "\n\n".join(context_blocks)
-    history_text = "\n".join(
-        f"{entry['role'].capitalize()}: {entry['content']}" for entry in history[-4:]
+    system_prompt = (
+        "You are a helpful assistant that answers questions using only the PDF content below. "
+        "Always cite the chunk numbers you used.\n\n"
+        f"CONTEXT:\n{context}"
     )
+    # Build conversation history
+    chat_history = []
+    for msg in history[-6:]:
+        if msg["role"] == "user":
+            chat_history.append({"role": "user", "parts": [msg["content"]]})
+        elif msg["role"] == "assistant":
+            chat_history.append({"role": "model", "parts": [msg["content"]]})
 
-    prompt = (
-        f"PDF context:\n{context_text}\n\n"
-        f"Conversation history:\n{history_text}\n\n"
-        f"Question:\n{query}\n\n"
-        "Answer using only the PDF content above."
+    model = chat_model["client"].GenerativeModel(
+        model_name=chat_model["model"],
+        system_instruction=system_prompt,
+        generation_config={"temperature": chat_model["temperature"], "max_output_tokens": 1024},
     )
-
-    return [[
-        SystemMessage(content=system_instruction),
-        HumanMessage(content=prompt),
-    ]]
-
-
-def generate_answer(query: str, retrieved_chunks: list[dict], chat_model: ChatGoogleGenerativeAI, history: list[dict]) -> str:
-    """Generate an answer from Gemini 2.5 Flash using retrieved PDF context."""
-    if not retrieved_chunks:
-        return "I could not find relevant content in the uploaded PDF to answer that question."
-
-    messages = build_prompt(query, retrieved_chunks, history)
-    result = chat_model.generate(messages)
-    generation = result.generations[0][0]
-    return generation.text.strip()
+    chat = model.start_chat(history=chat_history)
+    response = chat.send_message(question)
+    return response.text

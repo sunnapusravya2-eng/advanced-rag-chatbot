@@ -1,111 +1,105 @@
+import os
 import numpy as np
 import faiss
-from typing import Any, List, Dict, Tuple
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
 
 
-# =========================
-# 1. EMBEDDING MODEL
-# =========================
-def create_embedding_model(api_key: str | None = None) -> GoogleGenerativeAIEmbeddings:
-    """Create Google Generative AI embedding model."""
+def create_embedding_model(api_key=None):
+    """Initialize and return the Google Generative AI embedding model."""
+    key = api_key or os.getenv("GOOGLE_API_KEY")
+    if not key:
+        raise ValueError(
+            "GOOGLE_API_KEY is not set. Please add it to your .env file."
+        )
 
-    kwargs = {
-        "model": "models/text-embedding-004",
-        "api_version": "v1",
+    genai.configure(api_key=key)
+
+    return {
+        "client": genai,
+        "model": os.getenv("EMBEDDING_MODEL", "models/text-embedding-004"),
     }
 
-    if api_key:
-        kwargs["google_api_key"] = api_key
 
-    return GoogleGenerativeAIEmbeddings(**kwargs)
+def build_faiss_index(chunks: list, embedding_model: dict) -> tuple:
+    """
+    Generate embeddings for all chunks and build a FAISS index.
+    """
+    if embedding_model is None:
+        raise ValueError(
+            "embedding_model is None. Make sure create_embedding_model() returned successfully."
+        )
 
+    client = embedding_model["client"]
+    model = embedding_model["model"]
 
-# =========================
-# 2. EMBEDD TEXTS
-# =========================
-def embed_texts(
-    texts: List[str],
-    embedding_model: GoogleGenerativeAIEmbeddings
-) -> List[List[float]]:
-    """Generate embeddings for text chunks."""
+    embeddings = []
 
-    if not texts:
-        return []
-
-    embeddings = embedding_model.embed_documents(texts)
+    for i, chunk in enumerate(chunks):
+        try:
+            result = client.embed_content(
+                model=model,
+                content=chunk,
+                task_type="retrieval_document",
+            )
+            embeddings.append(result["embedding"])
+        except Exception as e:
+            raise RuntimeError(f"Failed to embed chunk {i}: {e}")
 
     if not embeddings:
-        raise ValueError("Embedding generation failed (empty output)")
+        raise ValueError("No embeddings were generated. Check your chunks and API key.")
 
-    return embeddings
+    embeddings = np.array(embeddings).astype("float32")
+    dimension = embeddings.shape[1]
 
-
-# =========================
-# 3. BUILD FAISS INDEX
-# =========================
-def build_faiss_index(
-    chunks: List[str],
-    embedding_model: GoogleGenerativeAIEmbeddings
-) -> Tuple[faiss.IndexFlatIP, int]:
-
-    """Create FAISS index from embeddings."""
-
-    if not chunks:
-        raise ValueError("No text chunks provided.")
-
-    embeddings = embed_texts(chunks, embedding_model)
-    np_embeddings = np.array(embeddings, dtype=np.float32)
-
-    if np_embeddings.ndim != 2 or np_embeddings.shape[0] == 0:
-        raise ValueError("Invalid embeddings shape.")
-
-    # Normalize for cosine similarity
-    faiss.normalize_L2(np_embeddings)
-
-    index = faiss.IndexFlatIP(np_embeddings.shape[1])
-    index.add(np_embeddings)
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
 
     return index, len(chunks)
 
 
-# =========================
-# 4. RETRIEVE SIMILAR CHUNKS
-# =========================
 def retrieve_similar_chunks(
     query: str,
-    index: faiss.IndexFlatIP,
-    chunks: List[str],
-    embedding_model: GoogleGenerativeAIEmbeddings,
-    top_k: int = 4
-) -> List[Dict[str, Any]]:
+    index,
+    chunks: list,
+    embedding_model: dict,
+    top_k: int = 4,
+) -> list:
+    """
+    Embed the query and retrieve the most similar chunks from the FAISS index.
+    """
+    if embedding_model is None:
+        raise ValueError(
+            "embedding_model is None. Make sure create_embedding_model() returned successfully."
+        )
 
-    """Retrieve top matching chunks from FAISS."""
+    if index is None:
+        raise ValueError("FAISS index is None. Please upload and process a PDF first.")
 
-    if index.ntotal == 0:
-        return []
+    if not query.strip():
+        raise ValueError("Query is empty. Please enter a valid question.")
 
-    # embed query
-    query_embedding = embedding_model.embed_query(query)
-    query_vector = np.array(query_embedding, dtype=np.float32)[None, :]
+    client = embedding_model["client"]
+    model = embedding_model["model"]
 
-    # normalize
-    faiss.normalize_L2(query_vector)
+    try:
+        result = client.embed_content(
+            model=model,
+            content=query,
+            task_type="retrieval_query",
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to embed query: {e}")
 
-    top_k = min(top_k, index.ntotal)
-
-    scores, indices = index.search(query_vector, top_k)
+    query_vec = np.array([result["embedding"]]).astype("float32")
+    distances, indices = index.search(query_vec, top_k)
 
     results = []
-
-    for score, idx in zip(scores[0], indices[0]):
-        if idx == -1:
-            continue
-
-        results.append({
-            "index": int(idx),
-            "score": float(score),
-            "content": chunks[idx]
-        })
+    for dist, idx in zip(distances[0], indices[0]):
+        if idx < len(chunks):
+            results.append({
+                "index": int(idx),
+                "score": float(1 / (1 + dist)),
+                "content": chunks[idx],
+            })
 
     return results
