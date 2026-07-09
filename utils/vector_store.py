@@ -16,7 +16,7 @@ def create_embedding_model(api_key=None):
 
     return {
         "client": genai,
-        "model": os.getenv("EMBEDDING_MODEL", "models/text-embedding-004"),
+        "model": os.getenv("EMBEDDING_MODEL", "models/gemini-embedding-001"),
     }
 
 
